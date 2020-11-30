@@ -646,6 +646,7 @@ class MemTransformerLM(nn.Module):
     # ARGUMENTS
     # dec_inp: input sequence 
     # inst: instrument number
+    # mems: hidden state memories
     # RETURN: something, and the new hidden states?
     def _forward(self, dec_inp, inst, mems=None):
         qlen, bsz = dec_inp.size()
@@ -743,6 +744,32 @@ class MemTransformerLM(nn.Module):
 
         return core_out, new_mems
 
+    # forward_generate: taken from https://github.com/chrisdonahue/LakhNES/blob/master/model/mem_transformer.py.
+    # Use it to get the logits rather than the loss. Otherwise the same as forward (see below)
+    def forward_generate(self, data, inst, *mems):
+        if not mems: mems = self.init_mems()
+
+        tgt_len = data.size(0)
+        batch_size = data.size(1)
+        hidden, new_mems = self._forward(data, inst, mems=mems)
+
+        pred_hid = hidden[-tgt_len:]
+
+        assert self.crit.n_clusters == 0
+
+        logits = self.crit._compute_logit(
+            pred_hid.view(-1, pred_hid.size(-1)),
+            self.crit.out_layers[0].weight,
+            self.crit.out_layers[0].bias,
+            self.crit.out_projs[0])
+        logits = logits.view(tgt_len, batch_size, -1)
+
+        if new_mems is None:
+            return [logits]
+        else:
+            return [logits] + new_mems
+
+
     # forward: computes the loss and hidden states for a sequence
     # ARGUMENTS
     # data: an LxB tensor containing messages from a single instrument, for each batch
@@ -753,7 +780,7 @@ class MemTransformerLM(nn.Module):
     # RETURN: a list where the first element is a tensor containing the loss for each element in
     # each sequence (LxB), and the rest of the elements are the initial embeddings and hidden states
     # (LxBxD) for each layer
-    def forward(self, data, target, *mems, inst):
+    def forward(self, data, target, inst, *mems):
         # nn.DataParallel does not allow size(0) tensors to be broadcasted.
         # So, have to initialize size(0) mems inside the model forward.
         # Moreover, have to return new_mems to allow nn.DataParallel to piece
